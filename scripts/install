@@ -1,0 +1,29 @@
+#!/bin/sh
+#  DSM 7.1.1 安装脚本：复制文件、注册 Systemd 服务、初始化权限
+
+# ========== 1. 复制核心文件到套件目录 ==========
+mkdir -p $SYNOPKG_PKGDEST/bin          # 创建二进制文件目录
+# 替换为实际编译产物路径（假设编译产物在 src/ 下）
+cp -r $SYNOPKG_TEMP_DIR/src/moviepilot $SYNOPKG_PKGDEST/bin/  
+
+# 复制 Systemd 服务模板
+cp -r $SYNOPKG_TEMP_DIR/conf/moviepilot.service $SYNOPKG_PKGDEST/  
+
+
+# ========== 2. 动态替换服务文件中的占位符 ==========
+# 将 %SYNOPKG_PKGDEST% 替换为实际安装路径（DSM 自动注入的环境变量）
+sed -i "s|%SYNOPKG_PKGDEST%|$SYNOPKG_PKGDEST|g" $SYNOPKG_PKGDEST/moviepilot.service  
+
+# 将服务文件部署到 Systemd 目录
+mv $SYNOPKG_PKGDEST/moviepilot.service /etc/systemd/system/  
+
+
+# ========== 3. 注册并启动服务 ==========
+systemctl daemon-reload          # 重载 Systemd 配置
+systemctl enable moviepilot.service  # 设置开机自启
+systemctl start moviepilot.service   # 立即启动服务
+
+
+# ========== 4. 权限配置（可选） ==========
+chown -R root:root $SYNOPKG_PKGDEST  # 递归设置所有者
+chmod -R 755 $SYNOPKG_PKGDEST/bin    # 二进制文件设为可执行
