@@ -1,95 +1,102 @@
-name: 编译 DSM 7.1.1 兼容包（moviepilot 服务）
+name: 构建 DSM 7.1.1 兼容包（MoviePilot）
 
+# 触发条件：仅推送v*标签时触发（避免无关提交浪费资源）
 on:
   push:
     tags:
-      - 'v*'  # 标签触发（如 v1.0.0，版本号将用于 SPK 包）
-    branches:
-      - main  # 可选：主分支推送时触发测试构建
+      - 'v*'
 
 jobs:
   build-dsm-spk:
-    name: 构建 DSM 7.1.1 (x86_64)
-    runs-on: ubuntu-20.04  # 适配 DSM 旧版编译环境
+    name: 打包为 DSM 7.1.1 安装包
+    runs-on: ubuntu-20.04  # 兼容DSM 旧环境兼容性
     env:
-      DSM_VERSION: "7.1.1"      # 目标 DSM 版本
-      ARCH: "x86_64"           # 设备架构（x86_64 适配绝大多数机型）
-      PDK_VERSION: "1.2.10"     # 兼容 DSM 7.1.1 的 PDK 版本
-      SERVICE_NAME: "moviepilot"# 服务名（与 conf/scripts 中一致）
-      BINARY_NAME: "moviepilot" # 二进制文件名（与编译产物一致）
+      SERVICE_NAME: "moviepilot"  # 服务名（与conf/scripts一致）
+      DSM_VERSION: "7.1.1"         # 目标DSM版本
+      ARCH: "x86_64"               # 适配主流Synology x86_64设备
 
     steps:
-      ### 1. 检出代码（含子模块）
-      - name: 检出项目代码
+      ### 1. 检出代码（含子模块，关键！）
+      - name: 检出项目及资源子模块
         uses: actions/checkout@v4
         with:
-          submodules: recursive  # 若有子模块，需递归检出
+          submodules: recursive  # 拉取MoviePilot-Resources等子模块
+          fetch-depth: 0         # 确保标签信息完整
 
-      ### 2. 安装基础依赖（Docker + 编译工具）
-      - name: 安装系统依赖
+      ### 2. 验证必要文件（避免打包失败）
+      - name: 检查核心文件是否存在
         run: |
-          sudo apt-get update
-          sudo apt-get install -y curl tar gzip make gcc libc6-dev
-          # 安装并启动 Docker（PDK 依赖容器环境）
-          sudo apt-get install -y docker.io
-          sudo systemctl start docker
-          sudo usermod -aG docker $USER
+          # 检查服务配置
+          if [ ! -f "conf/moviepilot.service" ]; then
+            echo "❌ 缺少 conf/moviepilot.service，请检查路径"
+            exit 1
+          fi
+          # 检查安装脚本
+          for script in install start stop upgrade; do
+            if [ ! -f "scripts/$script" ]; then
+              echo "❌ 缺少 scripts/$script，请补全"
+              exit 1
+            fi
+          done
+          # 检查项目入口（根据实际情况修改，如main.py）
+          if [ ! -f "app/main.py" ]; then
+            echo "⚠️ 未找到 app/main.py，若项目结构不同可忽略此警告"
+          fi
 
-      ### 3. 下载并初始化 Synology PDK
-      - name: 部署 Synology PDK 工具链
+      ### 3. 安装Python依赖（为打包做准备）
+      - name: 设置Python环境
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"  # 匹配DSM 7.1.1内置Python版本
+
+      - name: 安装项目依赖
         run: |
-          # 下载 PDK
-          curl -L "https://github.com/SynologyOpenSource/pkgscripts-ng/releases/download/${PDK_VERSION}/pkgscripts-ng-${PDK_VERSION}.tar.gz" -o pdk.tar.gz
-          mkdir -p /opt/pdk
-          tar -zxf pdk.tar.gz -C /opt/pdk --strip-components=1
-          # 初始化 PDK 环境（指定 DSM 版本和架构）
-          /opt/pdk/EnvDeploy -v ${DSM_VERSION} -p ${ARCH}
-          # 添加交叉编译工具到环境变量
-          echo "/toolkit/build_env/ds.${ARCH}-${DSM_VERSION}/bin" >> $GITHUB_PATH
+          python -m pip install --upgrade pip
+          # 安装依赖到项目目录（便于打包）
+          pip install -r requirements.txt -t ./app/lib/ --upgrade
 
-      ### 4. 编译项目（生成 moviepilot 二进制文件）
-      - name: 交叉编译 moviepilot
+      ### 4. 使用官方工具打包SPK（替代复杂的PDK手动操作）
+      - name: 构建DSM安装包（.spk）
+        uses: SynoCommunity/spk-tools-action@v1.5  # 稳定版官方工具
+        with:
+          action: package
+          dsm-version: ${{ env.DSM_VERSION }}
+          arch: ${{ env.ARCH }}
+          package-name: ${{ env.SERVICE_NAME }}
+          # 核心：映射项目文件到SPK标准结构
+          source: |
+            ./app = /app                     # 项目核心代码
+            ./conf/moviepilot.service = /conf/moviepilot.service  # 服务配置
+            ./scripts = /scripts             # 安装/启动脚本
+            ./LICENSE = /LICENSE             # 许可证文件
+            ./package.json = /package.json   # 项目元数据
+            ./README.md = /README.md         # 说明文档
+          # SPK包元数据（DSM套件中心显示用）
+          info: |
+            package=${{ env.SERVICE_NAME }}
+            version=${{ github.ref_name }}    # 版本号取自标签（如v1.0.0）
+            description="MoviePilot媒体管理工具（DSM 7.1.1兼容版）"
+            arch=${{ env.ARCH }}
+            dsm_version_min=${{ env.DSM_VERSION }}
+            maintainer="anorika77"           # 替换为你的GitHub用户名
+            support_url="https://github.com/anorika77/MoviePilot/issues"  # 支持地址
+
+      ### 5. 验证SPK包生成
+      - name: 检查打包结果
         run: |
-          # 进入源码目录（根据实际项目结构调整，示例：src/ 目录）
-          cd src/
-          # 示例：若为 C/C++ 项目，使用交叉编译器
-          make CC=x86_64-pc-linux-gnu-gcc CXX=x86_64-pc-linux-gnu-g++
-          # 验证二进制文件架构（必须为 x86-64）
-          file ./${BINARY_NAME} | grep "x86-64"
+          ls -lh *.spk  # 显示生成的SPK文件
+          # 验证文件大小（确保非空）
+          if [ ! -s "${SERVICE_NAME}-${{ github.ref_name }}.spk" ]; then
+            echo "❌ SPK包生成失败或为空"
+            exit 1
+          fi
 
-      ### 5. 构建 DSM 安装包（.spk）
-      - name: 打包为 SPK 格式
-        run: |
-          # 创建 SPK 标准目录结构
-          mkdir -p spk/{package/bin,conf,scripts}
-          # 复制编译产物
-          cp src/${BINARY_NAME} spk/package/bin/
-          # 复制服务配置和脚本
-          cp conf/${SERVICE_NAME}.service spk/conf/
-          cp scripts/* spk/scripts/
-          # 生成 INFO 文件（SPK 元数据）
-          cat > spk/INFO << EOF
-          package="${SERVICE_NAME}"
-          version="${{ github.ref_name || 'dev' }}"  # 从标签获取版本
-          description="MoviePilot 服务包（DSM 7.1.1 兼容）"
-          arch="${ARCH}"
-          dsm_version_min="7.1.1"
-          maintainer="your-github-username"  # 替换为实际维护者
-          EOF
-          # 使用 PDK 打包
-          /opt/pdk/pkg_make --output . --source spk
-
-      ### 6. 验证 SPK 完整性
-      - name: 检查 SPK 包
-        run: |
-          ls -lh *.spk  # 确保文件存在
-          # 可选：PDK 官方校验工具
-          /opt/pdk/pkg_check --file ${SERVICE_NAME}-${{ github.ref_name }}.spk
-
-      ### 7. 上传 DSM 安装包
-      - name: 上传 artifact
+      ### 6. 上传最终产物（便于下载安装）
+      - name: 上传DSM安装包
         uses: actions/upload-artifact@v4
         with:
-          name: dsm711-${ARCH}-${{ github.ref_name }}
+          name: dsm711-${{ env.ARCH }}-${{ github.ref_name }}
           path: "*.spk"
-          retention-days: 30  # 保留 30 天
+          retention-days: 90  # 保留90天，方便后续下载
+          if-no-files-found: error  # 无文件时明确报错
+    
