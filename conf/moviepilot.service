@@ -1,0 +1,17 @@
+[Unit]
+Description=MoviePilot Service  # 服务描述
+After=network.target            # 网络就绪后启动
+
+[Service]
+Type=simple
+# 二进制文件路径（安装后位于套件目录的 bin/ 下）
+ExecStart=%SYNOPKG_PKGDEST%/bin/moviepilot  
+WorkingDirectory=%SYNOPKG_PKGDEST%  # 工作目录
+Restart=always                     # 异常退出时自动重启
+RestartSec=5                       # 重启间隔
+User=root                          # 运行用户（如需降权，可改为专用用户）
+# 若有 Python 依赖，添加环境变量（示例）
+Environment=PYTHONPATH=%SYNOPKG_PKGDEST%/lib  
+
+[Install]
+WantedBy=multi-user.target  # 多用户模式下自启
