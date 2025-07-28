@@ -1,0 +1,3 @@
+#!/bin/sh
+# 调用 Systemd 启动服务
+systemctl start moviepilot.service
