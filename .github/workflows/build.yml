@@ -1,102 +1,118 @@
-name: 构建 DSM 7.1.1 兼容包（MoviePilot）
+name: 构建 DSM 7.1.1 套件（MoviePilot）
 
-# 触发条件：仅推送v*标签时触发（避免无关提交浪费资源）
+# 触发条件：推送标签时触发（如 v1.0.0）
 on:
   push:
     tags:
       - 'v*'
 
 jobs:
-  build-dsm-spk:
-    name: 打包为 DSM 7.1.1 安装包
-    runs-on: ubuntu-20.04  # 兼容DSM 旧环境兼容性
+  build-spk:
+    runs-on: ubuntu-20.04  # 兼容DSM工具链的稳定环境
     env:
-      SERVICE_NAME: "moviepilot"  # 服务名（与conf/scripts一致）
-      DSM_VERSION: "7.1.1"         # 目标DSM版本
-      ARCH: "x86_64"               # 适配主流Synology x86_64设备
+      PACKAGE_NAME: "moviepilot"
+      DSM_VERSION: "7.1.1"
+      ARCH: "x86_64"  # 适配主流Synology x86_64设备（如DS920+）
+      # 项目关键路径（根据仓库结构调整）
+      APP_DIR: "app"
+      REQUIREMENTS: "requirements.txt"
+      CONF_DIR: "conf"
+      SCRIPTS_DIR: "scripts"
 
     steps:
-      ### 1. 检出代码（含子模块，关键！）
-      - name: 检出项目及资源子模块
+      # 步骤1：检出代码（含子模块，必须步骤）
+      - name: 检出项目代码及资源
         uses: actions/checkout@v4
         with:
-          submodules: recursive  # 拉取MoviePilot-Resources等子模块
-          fetch-depth: 0         # 确保标签信息完整
+          submodules: recursive  # 拉取MoviePilot-Resources等依赖
+          fetch-depth: 1
 
-      ### 2. 验证必要文件（避免打包失败）
-      - name: 检查核心文件是否存在
+      # 步骤2：验证核心文件是否存在（防止打包失败）
+      - name: 检查必要文件
         run: |
           # 检查服务配置
-          if [ ! -f "conf/moviepilot.service" ]; then
-            echo "❌ 缺少 conf/moviepilot.service，请检查路径"
+          if [ ! -f "${{ env.CONF_DIR }}/moviepilot.service" ]; then
+            echo "❌ 缺少 ${CONF_DIR}/moviepilot.service"
             exit 1
           fi
           # 检查安装脚本
           for script in install start stop upgrade; do
-            if [ ! -f "scripts/$script" ]; then
-              echo "❌ 缺少 scripts/$script，请补全"
+            if [ ! -f "${{ env.SCRIPTS_DIR }}/$script" ]; then
+              echo "❌ 缺少 ${SCRIPTS_DIR}/$script"
               exit 1
             fi
           done
-          # 检查项目入口（根据实际情况修改，如main.py）
-          if [ ! -f "app/main.py" ]; then
-            echo "⚠️ 未找到 app/main.py，若项目结构不同可忽略此警告"
+          # 检查项目入口
+          if [ ! -d "${{ env.APP_DIR }}" ]; then
+            echo "❌ 核心代码目录 ${APP_DIR} 不存在"
+            exit 1
+          fi
+          # 检查依赖清单
+          if [ ! -f "${{ env.REQUIREMENTS }}" ]; then
+            echo "⚠️ 未找到依赖文件 ${REQUIREMENTS}，将跳过依赖安装"
           fi
 
-      ### 3. 安装Python依赖（为打包做准备）
-      - name: 设置Python环境
+      # 步骤3：安装Python及项目依赖（打包时包含）
+      - name: 配置Python环境
+        if: -f ${{ env.REQUIREMENTS }}  # 仅当依赖文件存在时执行
         uses: actions/setup-python@v5
         with:
-          python-version: "3.10"  # 匹配DSM 7.1.1内置Python版本
+          python-version: "3.10"  # DSM 7.1.1 内置Python版本
 
-      - name: 安装项目依赖
+      - name: 安装项目依赖到本地目录
+        if: -f ${{ env.REQUIREMENTS }}
         run: |
-          python -m pip install --upgrade pip
-          # 安装依赖到项目目录（便于打包）
-          pip install -r requirements.txt -t ./app/lib/ --upgrade
+          # 创建依赖目录（打包时会包含）
+          mkdir -p ${{ env.APP_DIR }}/lib
+          # 安装依赖到项目内（避免依赖系统环境）
+          pip install --no-cache-dir -r ${{ env.REQUIREMENTS }} -t ${{ env.APP_DIR }}/lib/
 
-      ### 4. 使用官方工具打包SPK（替代复杂的PDK手动操作）
-      - name: 构建DSM安装包（.spk）
-        uses: SynoCommunity/spk-tools-action@v1.5  # 稳定版官方工具
+      # 步骤4：使用官方工具打包SPK（核心步骤）
+      - name: 构建DSM套件包（.spk）
+        uses: SynoCommunity/spk-tools-action@v1.5
         with:
           action: package
           dsm-version: ${{ env.DSM_VERSION }}
           arch: ${{ env.ARCH }}
-          package-name: ${{ env.SERVICE_NAME }}
-          # 核心：映射项目文件到SPK标准结构
+          package-name: ${{ env.PACKAGE_NAME }}
+          # 映射项目文件到SPK标准结构
           source: |
-            ./app = /app                     # 项目核心代码
-            ./conf/moviepilot.service = /conf/moviepilot.service  # 服务配置
-            ./scripts = /scripts             # 安装/启动脚本
-            ./LICENSE = /LICENSE             # 许可证文件
-            ./package.json = /package.json   # 项目元数据
-            ./README.md = /README.md         # 说明文档
-          # SPK包元数据（DSM套件中心显示用）
+            ${{ env.APP_DIR }} = /app                   # 核心代码
+            ${{ env.CONF_DIR }}/moviepilot.service = /conf/moviepilot.service  # 服务配置
+            ${{ env.SCRIPTS_DIR }} = /scripts           # 安装/启动脚本
+            LICENSE = /LICENSE                           # 许可证
+            README.md = /README.md                       # 说明文档
+            package.json = /package.json                 # 项目元数据
+          # SPK元数据（DSM套件中心显示信息）
           info: |
-            package=${{ env.SERVICE_NAME }}
-            version=${{ github.ref_name }}    # 版本号取自标签（如v1.0.0）
+            package=${{ env.PACKAGE_NAME }}
+            version=${{ github.ref_name }}  # 版本号取自标签（如v1.0.0）
             description="MoviePilot媒体管理工具（DSM 7.1.1兼容版）"
             arch=${{ env.ARCH }}
             dsm_version_min=${{ env.DSM_VERSION }}
-            maintainer="anorika77"           # 替换为你的GitHub用户名
-            support_url="https://github.com/anorika77/MoviePilot/issues"  # 支持地址
+            maintainer="anorika77"
+            support_url="https://github.com/anorika77/MoviePilot/issues"
 
-      ### 5. 验证SPK包生成
+      # 步骤5：验证SPK包生成
       - name: 检查打包结果
         run: |
-          ls -lh *.spk  # 显示生成的SPK文件
-          # 验证文件大小（确保非空）
-          if [ ! -s "${SERVICE_NAME}-${{ github.ref_name }}.spk" ]; then
-            echo "❌ SPK包生成失败或为空"
+          ls -lh *.spk  # 显示生成的套件包
+          SPK_FILE="${{ env.PACKAGE_NAME }}-${{ github.ref_name }}.spk"
+          if [ ! -f "$SPK_FILE" ]; then
+            echo "❌ SPK包生成失败：$SPK_FILE 不存在"
+            exit 1
+          fi
+          if [ $(stat -c%s "$SPK_FILE") -lt 1024 ]; then
+            echo "❌ SPK包异常：文件大小过小"
             exit 1
           fi
 
-      ### 6. 上传最终产物（便于下载安装）
-      - name: 上传DSM安装包
+      # 步骤6：上传最终套件包
+      - name: 上传DSM套件包
         uses: actions/upload-artifact@v4
         with:
           name: dsm711-${{ env.ARCH }}-${{ github.ref_name }}
           path: "*.spk"
-          retention-days: 90  # 保留90天，方便后续下载
+          retention-days: 90  # 保留90天
           if-no-files-found: error  # 无文件时明确报错
     
