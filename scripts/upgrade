@@ -1,0 +1,8 @@
+#!/bin/sh
+# 升级时可添加备份、数据迁移等逻辑，此处为最简实现
+# 至少保留空脚本，避免 DSM 升级时报错
+
+# 示例：备份旧配置（若有）
+if [ -f $SYNOPKG_PKGDEST/conf/config.ini ]; then
+    cp $SYNOPKG_PKGDEST/conf/config.ini $SYNOPKG_TEMP_DIR/backup_config.ini
+fi
